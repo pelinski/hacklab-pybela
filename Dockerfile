@@ -14,7 +14,7 @@ RUN git clone https://github.com/BelaPlatform/bb.org-overlays.git /sysroot/opt/b
 
 RUN mkdir -p /root/code
 
-COPY code/ /root/code/
+RUN git clone --recurse-submodules -j8  https://github.com/pelinski/hacklab-pybela /root/code/ 
 
 WORKDIR /root/code
 
