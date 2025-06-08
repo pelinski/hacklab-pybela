@@ -1,14 +1,17 @@
 # remove the container
-docker rm bela-tutorial 
+docker rm hacklab-pybela 
 
 # build the image
-docker build -t xc-pybela-tutorial .
+docker build -t hacklab .
 
 # create a container
-docker run -it --name bela-tutorial -e BBB_HOSTNAME=192.168.7.2 -p 8889:8889 xc-pybela-tutorial
+docker run -it --name hacklab-pybela -e BBB_HOSTNAME=192.168.7.2 -p 8889:8889 hacklab
 
 # run notebook inside the container
 jupyter notebook --ip=* --port=8889  --allow-root --no-browser
 
 # reopen container 
-docker start -ia bela-tutorial
+docker start -ia hacklab-pybela
+
+#locally 
+source .venv/bin/activate

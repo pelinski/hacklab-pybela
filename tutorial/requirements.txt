@@ -1,3 +1,0 @@
-matplotlib==3.8.2
-pybela==1.0.0
-torch==2.4.0
