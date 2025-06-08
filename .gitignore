@@ -5,3 +5,4 @@ dev.txt
 log*
 .DS_Store
 flash-belas/
+code/bela-code/*/build/*
