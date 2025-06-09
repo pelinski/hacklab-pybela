@@ -14,7 +14,7 @@ RUN pip install torch --index-url https://download.pytorch.org/whl/cu117
 
 RUN mkdir -p /root/hacklab
 
-RUN git clone --recurse-submodules -j8  https://github.com/pelinski/hacklab-pybela /root/code/ 
+RUN git clone --recurse-submodules -j8  https://github.com/pelinski/hacklab-pybela /root/hacklab/ 
 
 WORKDIR /root/hacklab
 
