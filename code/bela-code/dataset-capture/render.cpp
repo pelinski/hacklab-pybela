@@ -63,7 +63,7 @@ void render(BelaContext* context, void* userData) {
 
             // out *= 0.4; // Scale down to avoid clipping
             in = hpFilter.process(in); // Apply high-pass filter
-            *gIn = in; // Update the watcher with the analog input value
+            gIn = in; // Update the watcher with the analog input value
             
             float out = in;
             for (unsigned int channel = 0; channel < context->audioOutChannels; channel++) {
