@@ -57,17 +57,17 @@ void render(BelaContext* context, void* userData) {
             // happen every audio frame (if it is 44100)
             // or every two audio frames (if it is 22050)
             for (unsigned int i = 0; i < NUM_SENSORS; i++) {
-                *gPiezos[i] =  analogRead(context, n / gAudioFramesPerAnalogFrame, i);
+                gIn[i]=  analogRead(context, n / gAudioFramesPerAnalogFrame, i);
+                *gPiezos[i] = gIn[i]; // Update the Watcher with the analog input value
                 // gAmplitude[i] = gPiezos[i]->get();
             }
             gGain = analogRead(context, n / gAudioFramesPerAnalogFrame, NUM_SENSORS);
 
-            float in = audioRead(context, n, 0); // Read audio input from channel 0
 
             // audio output
             float out = 0.0;
             for (unsigned int i = 0; i < NUM_SENSORS; i++) {
-              out += gPiezos[i].get(); // Scale the input to a reasonable output level
+              out += gIn[i]; // Scale the input to a reasonable output level
             }
             // out *= 0.4; // Scale down to avoid clipping
             out = hpFilter.process(out); // Apply high-pass filter
