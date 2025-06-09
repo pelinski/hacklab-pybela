@@ -1,23 +1,31 @@
 #include <Bela.h>
 #include <RtThread.h>
-#include <cmath>
-#include <libraries/AudioFile/AudioFile.h>
+#include <libraries/Biquad/Biquad.h>
+#include <libraries/Scope/Scope.h>
 #include <torch/script.h>
 #include <vector>
 
-#define N_VARS 2
+#define N_VARS 1
+#define NUM_SENSORS 7
+
+float gGain;
+float gMean = -1.860415344092044e-08;
+float gStd = 0.08207735935086384;
+Biquad hpFilter; // Biquad high-pass frequency;
+Scope scope;
 
 // torch buffers
 const int gWindowSize = 512;
 int gNumTargetWindows = 1;
-const int gInputBufferSize = 100 * gWindowSize;
-const int gOutputBufferSize = gNumTargetWindows * gInputBufferSize;
-int gOutputBufferWritePointer = 2 * gWindowSize;
+const int gInputBufferSize = 50 * gWindowSize;
+const int gOutputBufferSize = 50 * gNumTargetWindows * gInputBufferSize;
+int gOutputBufferWritePointer = 3 * gWindowSize;
 int gDebugPrevBufferWritePointer = gOutputBufferWritePointer;
 int gDebugFrameCounter = 0;
 int gOutputBufferReadPointer = 0;
 int gInputBufferPointer = 0;
 int gWindowFramesCounter = 0;
+
 std::vector<std::vector<float>>
     gInputBuffer(N_VARS, std::vector<float>(gInputBufferSize));
 std::vector<std::vector<float>>
@@ -29,39 +37,37 @@ std::vector<std::vector<float>> unwrappedBuffer(gWindowSize,
 AuxiliaryTask gInferenceTask;
 int gCachedInputBufferPointer = 0;
 
-// LFO
-float gFrequency = 15.0;
-float gPhase;
-unsigned int gAudioFramesPerAnalogFrame;
-float gInverseSampleRate;
-
 void inference_task_background(void *);
-
-std::string gFilename = "waves.wav";
-std::vector<std::vector<float>> gSampleData;
-int gStartFrame = 44100;
-int gEndFrame = 88200;
-unsigned int gReadPtr;
 
 std::string gModelPath = "model.jit";
 
 int start = 1;
 
+unsigned int gAudioFramesPerAnalogFrame; // Number of audio frames per analog
+                                         // frame
+float gInvSampleRate;                    // 1/sample rate
+float gInvAudioFramesPerAnalogFrame;     // 1/audio frames per analog frame
+
 bool setup(BelaContext *context, void *userData) {
 
-  printf("analog sample rate: %.1f\n", context->analogSampleRate);
-
-  // Better to calculate the inverse sample rate here and store it in a variable
-  // so it can be reused
-  gInverseSampleRate = 1.0 / context->audioSampleRate;
+  gAudioFramesPerAnalogFrame = context->audioFrames / context->analogFrames;
+  gInvAudioFramesPerAnalogFrame = 1.0f / gAudioFramesPerAnalogFrame;
+  gInvSampleRate = 1.0f / context->audioSampleRate;
 
   // Set up the thread for the inference
+  Biquad::Settings settings{
+      .fs = context->audioSampleRate,
+      .type = Biquad::highpass,
+      .cutoff = 2.0,
+      .q = 0.707,
+      .peakGainDb = 0,
+  };
+  hpFilter.setup(settings);
+
+  scope.setup(3, context->analogSampleRate);
+
   gInferenceTask =
       Bela_createAuxiliaryTask(inference_task_background, 99, "bela-inference");
-
-  // rate of audio frames per analog frame
-  if (context->analogFrames)
-    gAudioFramesPerAnalogFrame = context->audioFrames / context->analogFrames;
 
   if (userData != 0)
     gModelPath = *(std::string *)userData;
@@ -75,12 +81,16 @@ bool setup(BelaContext *context, void *userData) {
   // Warm up inference
   try {
     // Create a dummy input tensor
-    torch::Tensor dummy_input = torch::rand({1, 512, 2});
+    torch::Tensor dummy_input =
+        torch::rand({1, gWindowSize, N_VARS}, torch::kFloat);
 
+    for (int i = 0; i < 10; ++i) { // warmup
+      printf("Warming up inference %d\n", i);
+      auto output = model.forward({dummy_input}).toTensor();
+      output = model.forward({dummy_input}).toTensor();
+    }
     auto output = model.forward({dummy_input}).toTensor();
     output = model.forward({dummy_input}).toTensor();
-    output = model.forward({dummy_input}).toTensor();
-
     // Print the result
     std::cout << "Input tensor dimensions: " << dummy_input.sizes()
               << std::endl;
@@ -89,10 +99,6 @@ bool setup(BelaContext *context, void *userData) {
     std::cerr << "Error during dummy inference: " << e.msg() << std::endl;
     return false;
   }
-
-  // Load the audio file
-  gSampleData =
-      AudioFileUtilities::load(gFilename, gEndFrame - gStartFrame, gStartFrame);
 
   return true;
 }
@@ -105,7 +111,8 @@ void inference_task(const std::vector<std::vector<float>> &inBuffer,
   // Precompute circular buffer indices
   std::vector<int> circularIndices(gWindowSize);
   for (int n = 0; n < gWindowSize; ++n) {
-    circularIndices[n] = (inPointer + n - gWindowSize + gInputBufferSize) % gInputBufferSize;
+    circularIndices[n] =
+        (inPointer + n - gWindowSize + gInputBufferSize) % gInputBufferSize;
   }
 
   // Fill unwrappedBuffer using precomputed indices
@@ -116,14 +123,18 @@ void inference_task(const std::vector<std::vector<float>> &inBuffer,
   }
 
   // Convert unwrappedBuffer to a Torch tensor without additional copying
-  torch::Tensor inputTensor = torch::from_blob(unwrappedBuffer.data(), {1, gWindowSize, N_VARS}, torch::kFloat).clone();
+  torch::Tensor inputTensor =
+      torch::from_blob(unwrappedBuffer.data(), {1, gWindowSize, N_VARS},
+                       torch::kFloat)
+          .clone();
 
   // Perform inference
   torch::Tensor outputTensor = model.forward({inputTensor}).toTensor();
-  outputTensor = outputTensor.squeeze(0);  // Shape: [gNumTargetWindows * gWindowSize, N_VARS]
+  outputTensor = outputTensor.squeeze(
+      0); // Shape: [gNumTargetWindows * gWindowSize, N_VARS]
 
   // Prepare a pointer to the output tensor's data
-  float* outputData = outputTensor.data_ptr<float>();
+  float *outputData = outputTensor.data_ptr<float>();
 
   // Precompute output circular buffer indices
   std::vector<int> outCircularIndices(gNumTargetWindows * gWindowSize);
@@ -153,105 +164,72 @@ void inference_task_background(void *) {
 
 void render(BelaContext *context, void *userData) {
 
-  float pot1;
-  float pot2;
-  float outpot1;
-  float outpot2;
-
   for (unsigned int n = 0; n < context->audioFrames; n++) {
     if (gAudioFramesPerAnalogFrame && !(n % gAudioFramesPerAnalogFrame)) {
-
-      if (n == 0) { // only update the pot values once per block{
-        pot1 = map(analogRead(context, n / gAudioFramesPerAnalogFrame, 0), 0,
-                   0.84, 0, 3);
-        pot2 = map(analogRead(context, n / gAudioFramesPerAnalogFrame, 1), 0,
-                   0.84, 0, 1);
-
-        // -- pytorch buffer
-        gInputBuffer[0][gInputBufferPointer] = pot1;
-        gInputBuffer[1][gInputBufferPointer] = pot2;
-        if (++gInputBufferPointer >= gInputBufferSize) {
-          // Wrap the circular buffer
-          // Notice: this is not the condition for starting a new inference
-          gInputBufferPointer = 0;
-        }
-
-        if (++gWindowFramesCounter >= gWindowSize) {
-          gWindowFramesCounter = 0;
-          gCachedInputBufferPointer = gInputBufferPointer;
-          Bela_scheduleAuxiliaryTask(gInferenceTask);
-        }
-
-        // debugging
-        gDebugFrameCounter++;
-        if (gOutputBufferWritePointer != gDebugPrevBufferWritePointer) {
-          rt_printf("aux task took: %d, write pointer - read pointer: %d \n",
-                    gDebugFrameCounter,
-                    gOutputBufferWritePointer - gOutputBufferReadPointer);
-          gDebugPrevBufferWritePointer = gOutputBufferWritePointer;
-          gDebugFrameCounter = 0;
-        }
-
-        // Get the output sample from the output buffer
-        outpot1 = gOutputBuffer[0][gOutputBufferReadPointer];
-        outpot2 = gOutputBuffer[1][gOutputBufferReadPointer];
-
-        // rt_printf("read pointer: %d, write pointer %d \n",
-        //           gOutputBufferReadPointer, gOutputBufferWritePointer);
-        // Increment the read pointer in the output circular buffer
-        if ((gOutputBufferReadPointer + 1) % gOutputBufferSize ==
-            gOutputBufferWritePointer) {
-          rt_printf("Warning: output buffer overrun\n");
-        } else {
-          gOutputBufferReadPointer++;
-        }
-        if (gOutputBufferReadPointer >= gOutputBufferSize)
-          gOutputBufferReadPointer = 0;
-
-        // --
+      float in = 0.0;
+      for (unsigned int i = 0; i < NUM_SENSORS; i++) {
+        in += analogRead(context, n / gAudioFramesPerAnalogFrame, i);
       }
-      // Increment read pointer and reset to 0 when end of file is reached
-      if (++gReadPtr > gSampleData[0].size())
-        gReadPtr = 0;
+      gGain = analogRead(context, n / gAudioFramesPerAnalogFrame, NUM_SENSORS);
 
-      // LFO code
-      gPhase += 2.0f * (float)M_PI * gFrequency * gInverseSampleRate;
-      if (gPhase > M_PI)
-        gPhase -= 2.0f * (float)M_PI;
+      // out *= 0.4; // Scale down to avoid clipping
+      in = hpFilter.process(in);
+      in = (in - gMean) / gStd; // norm
+      gInputBuffer[0][gInputBufferPointer] =
+          in; // Update the watcher with the analog input value
 
-      float tri;
-      float sq;
-      if (gPhase > 0) {
-        tri = -1 + (2 * gPhase / (float)M_PI);
-        sq = 1;
-      } else {
-        tri = -1 - (2 * gPhase / (float)M_PI);
-        sq = -1;
+      // -- pytorch buffer
+
+      if (++gInputBufferPointer >= gInputBufferSize) {
+        // Wrap the circular buffer
+        // Notice: this is not the condition for starting a new inference
+        gInputBufferPointer = 0;
       }
 
-      float lfo;
-      if (outpot1 <= 1) {
-        lfo = (1 - outpot1) * sinf(gPhase) + outpot1 * tri;
-      } else if (outpot1 <= 2) {
-        lfo = (2 - outpot1) * tri + (1 - outpot1) * sq;
-      } else if (outpot1 <= 3) {
-        float saw = 1 - (1 / (float)M_PI * gPhase);
-        lfo = (3 - outpot1) * sq + (2 - outpot1) * saw;
+      if (++gWindowFramesCounter >= gWindowSize) {
+        gWindowFramesCounter = 0;
+        gCachedInputBufferPointer = gInputBufferPointer;
+        Bela_scheduleAuxiliaryTask(gInferenceTask);
       }
 
-      // Multiply the audio sample by the LFO value
-      float in = gSampleData[0][gReadPtr];
-      float out = outpot2 * lfo * gSampleData[0][gReadPtr];
+      // debugging
+      gDebugFrameCounter++;
+      if (gOutputBufferWritePointer != gDebugPrevBufferWritePointer) {
+        rt_printf("aux task took: %d, write pointer - read pointer: %d \n",
+                  gDebugFrameCounter,
+                  gOutputBufferWritePointer - gOutputBufferReadPointer);
+        gDebugPrevBufferWritePointer = gOutputBufferWritePointer;
+        gDebugFrameCounter = 0;
+      }
 
-      // Write the audio input to left channel, output to the right channel
+      // Get the output sample from the output buffer
+      float out = gOutputBuffer[0][gOutputBufferReadPointer];
+      out = out * gStd + gMean;
+      // Write the audio input to left channel, output to
+      // the right channel
       audioWrite(context, n, 0, out);
       audioWrite(context, n, 1, out);
+      // Increment the read pointer in the output circular buffer
+      if ((gOutputBufferReadPointer + 1) % gOutputBufferSize ==
+          gOutputBufferWritePointer) {
 
-      //   if (n % 64) { // debug every 64 frames
-      //     rt_printf("pot1: %.2f, pot2: %.2f\n", pot1, pot2);
-      //     rt_printf("outpot1: %.2f, outpot2: %.2f\n", outpot1, outpot2);
-      //   }
+        rt_printf("read pointer: %d, write pointer %d \n",
+                  gOutputBufferReadPointer, gOutputBufferWritePointer);
+        rt_printf("Warning: output buffer overrun\n");
+      } else {
+        gOutputBufferReadPointer++;
+      }
+      if (gOutputBufferReadPointer >= gOutputBufferSize)
+        gOutputBufferReadPointer = 0;
+
+      scope.log(in, out, gGain);
+      // --
     }
+
+    //   if (n % 64) { // debug every 64 frames
+    //     rt_printf("audioIn: %.2f, pot2: %.2f\n", audioIn, pot2);
+    //     rt_printf("audioOut: %.2f, outpot2: %.2f\n", audioOut, outpot2);
+    //   }
   }
 }
 
