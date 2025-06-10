@@ -11,6 +11,7 @@
 float gGain;
 float gMean = -1.860415344092044e-08;
 float gStd = 0.08207735935086384;
+float gPrevIn = 0.0;
 Biquad hpFilter; // Biquad high-pass frequency;
 Scope scope;
 
@@ -19,20 +20,17 @@ const int gWindowSize = 512;
 int gNumTargetWindows = 1;
 const int gInputBufferSize = 50 * gWindowSize;
 const int gOutputBufferSize = 50 * gNumTargetWindows * gInputBufferSize;
-int gOutputBufferWritePointer = 3 * gWindowSize;
+int gOutputBufferWritePointer = 1 * gWindowSize;
 int gDebugPrevBufferWritePointer = gOutputBufferWritePointer;
 int gDebugFrameCounter = 0;
 int gOutputBufferReadPointer = 0;
 int gInputBufferPointer = 0;
 int gWindowFramesCounter = 0;
 
-std::vector<std::vector<float>>
-    gInputBuffer(N_VARS, std::vector<float>(gInputBufferSize));
-std::vector<std::vector<float>>
-    gOutputBuffer(N_VARS, std::vector<float>(gOutputBufferSize));
-torch::jit::script::Module model;
-std::vector<std::vector<float>> unwrappedBuffer(gWindowSize,
-                                                std::vector<float>(N_VARS));
+std::vector<float> gInputBuffer(gInputBufferSize);
+std::vector<float> gOutputBuffer(gOutputBufferSize);
+std::vector<float> unwrappedBuffer(gWindowSize);
+torch::jit::script::Module model; // The TorchScript model
 
 AuxiliaryTask gInferenceTask;
 int gCachedInputBufferPointer = 0;
@@ -102,10 +100,8 @@ bool setup(BelaContext *context, void *userData) {
 
   return true;
 }
-void inference_task(const std::vector<std::vector<float>> &inBuffer,
-                    unsigned int inPointer,
-                    std::vector<std::vector<float>> &outBuffer,
-                    unsigned int outPointer) {
+void inference_task(const std::vector<float> &inBuffer, unsigned int inPointer,
+                    std::vector<float> &outBuffer, unsigned int outPointer) {
   RtThread::setThisThreadPriority(1);
 
   // Precompute circular buffer indices
@@ -118,13 +114,13 @@ void inference_task(const std::vector<std::vector<float>> &inBuffer,
   // Fill unwrappedBuffer using precomputed indices
   for (int n = 0; n < gWindowSize; ++n) {
     for (int i = 0; i < N_VARS; ++i) {
-      unwrappedBuffer[n][i] = inBuffer[i][circularIndices[n]];
+      unwrappedBuffer[n] = inBuffer[circularIndices[n]];
     }
   }
 
   // Convert unwrappedBuffer to a Torch tensor without additional copying
   torch::Tensor inputTensor =
-      torch::from_blob(unwrappedBuffer.data(), {1, gWindowSize, N_VARS},
+      torch::from_blob(unwrappedBuffer.data(), {1, gWindowSize, 1},
                        torch::kFloat)
           .clone();
 
@@ -145,9 +141,7 @@ void inference_task(const std::vector<std::vector<float>> &inBuffer,
   // Fill outBuffer using precomputed indices and outputData
   for (int n = 0; n < gNumTargetWindows * gWindowSize; ++n) {
     int circularBufferIndex = outCircularIndices[n];
-    for (int i = 0; i < N_VARS; ++i) {
-      outBuffer[i][circularBufferIndex] = outputData[n * N_VARS + i];
-    }
+    outBuffer[circularBufferIndex] = outputData[n];
   }
 }
 
@@ -175,8 +169,9 @@ void render(BelaContext *context, void *userData) {
       // out *= 0.4; // Scale down to avoid clipping
       in = hpFilter.process(in);
       in = (in - gMean) / gStd; // norm
-      gInputBuffer[0][gInputBufferPointer] =
-          in; // Update the watcher with the analog input value
+      gInputBuffer[gInputBufferPointer] =
+          in +
+          gPrevIn * gGain; // Update the watcher with the analog input value
 
       // -- pytorch buffer
 
@@ -203,8 +198,8 @@ void render(BelaContext *context, void *userData) {
       }
 
       // Get the output sample from the output buffer
-      float out = gOutputBuffer[0][gOutputBufferReadPointer];
-      out = out * gStd + gMean;
+      float out = gOutputBuffer[gOutputBufferReadPointer];
+      out = out * gStd + gMean * 10.0; // denorm
       // Write the audio input to left channel, output to
       // the right channel
       audioWrite(context, n, 0, out);
