@@ -7,6 +7,8 @@
 // Vector of Watcher pointers
 Watcher<float> gInAudio("gInAudio");
 
+Biquad hpFilter; // Biquad high-pass frequency;
+
 Scope scope;
 
 bool setup(BelaContext *context, void *userData) {
