@@ -46,7 +46,7 @@ void render(BelaContext *context, void *userData) {
          channel++) {
       audioWrite(context, n, channel, out);
     }
-    scope.log(gAudioIn);
+    scope.log(gInAudio);
   }
 }
 
