@@ -1,13 +1,10 @@
 #include <Bela.h>
 #include <Watcher.h>
 #include <cmath>
-#include <libraries/Biquad/Biquad.h>
 #include <libraries/Scope/Scope.h>
 
 // Vector of Watcher pointers
 Watcher<float> gInAudio("gInAudio");
-
-Biquad hpFilter; // Biquad high-pass frequency;
 
 Scope scope;
 
@@ -36,17 +33,15 @@ void render(BelaContext *context, void *userData) {
     uint64_t frames = context->audioFramesElapsed + n;
     Bela_getDefaultWatcherManager()->tick(frames);
 
-    float in = audioRead(context, n, i);
+    gAudioIn = audioRead(context, n, 0);
     // out *= 0.4; // Scale down to avoid clipping
-    in = hpFilter.process(in); // Apply high-pass filter
-    gInAudio = in;             // Update the watcher with the analog input value
 
-    float out = in;
+    float out = gAudioIn;
     for (unsigned int channel = 0; channel < context->audioOutChannels;
          channel++) {
       audioWrite(context, n, channel, out);
     }
-    scope.log(gInAudio);
+    scope.log(in);
   }
 }
 
