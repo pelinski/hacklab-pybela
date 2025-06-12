@@ -20,7 +20,7 @@ const int gWindowSize = 512;
 int gNumTargetWindows = 1;
 const int gInputBufferSize = 50 * gWindowSize;
 const int gOutputBufferSize = 50 * gNumTargetWindows * gInputBufferSize;
-int gOutputBufferWritePointer = 1 * gWindowSize;
+int gOutputBufferWritePointer = 2 * gWindowSize;
 int gDebugPrevBufferWritePointer = gOutputBufferWritePointer;
 int gDebugFrameCounter = 0;
 int gOutputBufferReadPointer = 0;
@@ -164,7 +164,9 @@ void render(BelaContext *context, void *userData) {
       for (unsigned int i = 0; i < NUM_SENSORS; i++) {
         in += analogRead(context, n / gAudioFramesPerAnalogFrame, i);
       }
-      gGain = analogRead(context, n / gAudioFramesPerAnalogFrame, NUM_SENSORS);
+      gGain =
+          map(analogRead(context, n / gAudioFramesPerAnalogFrame, NUM_SENSORS),
+              0, 0.075, 0, 1);
 
       // out *= 0.4; // Scale down to avoid clipping
       in = hpFilter.process(in);
@@ -172,6 +174,8 @@ void render(BelaContext *context, void *userData) {
       gInputBuffer[gInputBufferPointer] =
           in +
           gPrevIn * gGain; // Update the watcher with the analog input value
+
+      gPrevIn = in;
 
       // -- pytorch buffer
 
@@ -207,7 +211,6 @@ void render(BelaContext *context, void *userData) {
       // Increment the read pointer in the output circular buffer
       if ((gOutputBufferReadPointer + 1) % gOutputBufferSize ==
           gOutputBufferWritePointer) {
-
         rt_printf("read pointer: %d, write pointer %d \n",
                   gOutputBufferReadPointer, gOutputBufferWritePointer);
         rt_printf("Warning: output buffer overrun\n");
