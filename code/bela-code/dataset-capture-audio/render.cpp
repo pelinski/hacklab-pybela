@@ -4,7 +4,7 @@
 #include <libraries/Scope/Scope.h>
 
 // Vector of Watcher pointers
-Watcher<float> gInAudio("gInAudio");
+Watcher<float> gAudioIn("gAudioIn");
 
 Scope scope;
 
@@ -15,15 +15,6 @@ bool setup(BelaContext *context, void *userData) {
 
   // Initialize the scope
   scope.setup(1, context->audioSampleRate);
-
-  Biquad::Settings settings{
-      .fs = context->audioSampleRate,
-      .type = Biquad::highpass,
-      .cutoff = 2.0,
-      .q = 0.707,
-      .peakGainDb = 0,
-  };
-  hpFilter.setup(settings);
 
   return true;
 }
@@ -41,7 +32,7 @@ void render(BelaContext *context, void *userData) {
          channel++) {
       audioWrite(context, n, channel, out);
     }
-    scope.log(in);
+    scope.log(gAudioIn);
   }
 }
 
